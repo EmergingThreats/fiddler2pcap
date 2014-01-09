@@ -19,6 +19,21 @@ from optparse import OptionParser
 parser = OptionParser()
 parser.add_option("-i", dest="fiddler_raw_dir", type="string", help="path to fiddler raw directory we will read from glob format")
 parser.add_option("-o", dest="output_pcap", type="string", help="path to output PCAP file")
+parser.add_option("--src", dest="srcip", type="string", help="src ip address to use if not specified we read it from the XML")
+parser.add_option("--dst", dest="dstip", type="string", help="dst ip address to use if not specified we read it from the XML")
+parser.add_option("--dproxy", dest="dproxy", action="store_true", default=False, help="attempt to unproxify the pcap")
+ 
+src = None
+dst = None
+
+def validate_ip(ip):
+    if re.match(r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$",ip) != None:
+        return True
+    else:
+        print "The ip address you provides is invalid %s exiting" % (ip)
+        sys.exit(-1)
+
+
 (options, args) = parser.parse_args()
 if options == []:
    print parser.print_help()
@@ -29,10 +44,13 @@ if not options.fiddler_raw_dir or options.fiddler_raw_dir == "":
 if not options.output_pcap or options.output_pcap == "":
    print parser.print_help()
    sys.exit(-1)
+if options.srcip and validate_ip(options.srcip):
+   src = options.srcip 
+if options.dstip and validate_ip(options.dstip):
+   dst = options.dstip
 
 #Open our packet dumper
 pktdump = PcapWriter(options.output_pcap, sync=True)
-
 
 def build_handshake(src,dst,sport,dport):
     ipsrc   = src
@@ -87,8 +105,6 @@ if os.path.isdir(options.fiddler_raw_dir):
     m_file_list=glob.glob("%s/%s" % (options.fiddler_raw_dir,"*_m.xml")) 
     m_file_list.sort()
     for xml_file in m_file_list:
-        src =""
-        dst =""
         sport=""
         dport=80
         dom = parse(xml_file)
@@ -106,14 +122,16 @@ if os.path.isdir(options.fiddler_raw_dir):
             if m and m.group("sport"):
                 sport = int(m.group("sport"))
                 #sport = random.randint(1024, 65535)
-            elif m and m.group("clientip"):
+            elif m and m.group("clientip") and src == None:
                 src = m.group("clientip")
-            elif m and m.group("hostip"):
+            elif m and m.group("hostip") and dst == None:
                 dst = m.group("hostip")
         req = open(options.fiddler_raw_dir + fid + "_c.txt").read()
-        m=re.match(r"^[^\r\n]+?\s+?https?\:\/\/[^\/\r\n]+?\:(?P<dport>\d{1,5})\/",req)
-        if m and m.group("dport") and int(m.group("dport")) <= 65535:
-            dport = int(m.group("dport"))
+        m=re.match(r"^[^\r\n\s]+\s+(?P<host_and_port>https?\:\/\/[^\/\r\n\:]+(\:(?P<dport>\d{1,5}))?)\/",req)
+        if m and options.dproxy and m.group("host_and_port"):
+            req = req.replace(m.group("host_and_port"),"",1)
+            if m.group("dport") and int(m.group("dport")) <= 65535:
+                dport = int(m.group("dport"))
         resp = open(options.fiddler_raw_dir + fid + "_s.txt").read()
         print "src: %s dst: %s sport: %s dport: %s" % (src, dst, sport, dport)
         (seq,ack)=build_handshake(src,dst,sport,dport)
