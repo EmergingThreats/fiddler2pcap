@@ -10,6 +10,9 @@ import random
 import os
 import sys
 import re
+import zipfile
+import tempfile
+import shutil
 from xml.dom.minidom import parse, parseString
 from scapy.utils import PcapWriter
 from scapy.all import *
@@ -17,12 +20,13 @@ import glob
 from optparse import OptionParser
 
 parser = OptionParser()
-parser.add_option("-i", dest="fiddler_raw_dir", type="string", help="path to fiddler raw directory we will read from glob format")
+parser.add_option("-i", dest="input_target", type="string", help="path to fiddler raw directory we will read from glob format or path to saz file with --saz option")
 parser.add_option("-o", dest="output_pcap", type="string", help="path to output PCAP file")
 parser.add_option("--src", dest="srcip", type="string", help="src ip address to use if not specified we read it from the XML")
 parser.add_option("--dst", dest="dstip", type="string", help="dst ip address to use if not specified we read it from the XML")
 parser.add_option("--dproxy", dest="dproxy", action="store_true", default=False, help="attempt to unproxify the pcap")
- 
+parser.add_option("--saz", dest="input_is_saz", action="store_true", default=False, help="input is saz instead of raw directory")
+
 src = None
 dst = None
 
@@ -38,7 +42,7 @@ def validate_ip(ip):
 if options == []:
    print parser.print_help()
    sys.exit(-1)
-if not options.fiddler_raw_dir or options.fiddler_raw_dir == "":
+if not options.input_target or options.input_target == "":
    print parser.print_help()
    sys.exit(-1)
 if not options.output_pcap or options.output_pcap == "":
@@ -58,8 +62,11 @@ def build_handshake(src,dst,sport,dport):
     portsrc = sport
     portdst = dport
 
-    client_isn = random.randint(1024, (2**32)-1)
-    server_isn = random.randint(1024, (2**32)-1)
+#    We don't deal with session wrap around so lets make the range smaller for now
+#    client_isn = random.randint(1024, (2**32)-1)
+#    server_isn = random.randint(1024, (2**32)-1)
+    client_isn = random.randint(1024, 10000)
+    server_isn = random.randint(1024, 10000)
     syn = IP(src=ipsrc, dst=ipdst)/TCP(flags="S", sport=portsrc, dport=portdst, seq=client_isn)
     synack = IP(src=ipdst, dst=ipsrc)/TCP(flags="SA", sport=portdst, dport=portsrc, seq=server_isn, ack=syn.seq+1)
     ack = IP(src=ipsrc, dst=ipdst)/TCP(flags="A", sport=portsrc, dport=portdst, seq=syn.seq+1, ack=synack.seq+1)
@@ -100,7 +107,34 @@ def make_poop(src,dst,sport,dport,seq,ack,payload):
         pktdump.write(p)
         pktdump.write(returnAck)
     return(returnAck.seq,returnAck.ack)
+
+if options.input_is_saz and os.path.isfile(options.input_target):
+    try:
+        options.tmpdir = tempfile.mkdtemp()
+    except:
+        print "failed to create temp directory for saz extraction"
+        sys.exit(-1)
+    try:
+        z = zipfile.ZipFile(options.input_target,"r")
+    except:
+        print "failed to open saz file %s" % (options.input_target)
+        sys.exit(-1)
+    try:
+       z.extractall(options.tmpdir)
+       z.close()
+    except:
+       print "failed to extract saz file %s to %s" % (options.input_target, options.tmpdir)
+       sys.exit(-1)
+    if os.path.isdir("%s/raw/" % (options.tmpdir)):
+       options.fiddler_raw_dir = "%s/raw/" % (options.tmpdir)
+    else:
+       print "failed to find raw directory in extracted files %s/raw (must remove tmp file yourself)" % (options.tmpdir)
+       sys.exit(-1)
     
+elif os.path.isdir(options.input_target):
+    options.fiddler_raw_dir = options.input_target
+    options.tmpdir = None
+
 if os.path.isdir(options.fiddler_raw_dir):
     m_file_list=glob.glob("%s/%s" % (options.fiddler_raw_dir,"*_m.xml")) 
     m_file_list.sort()
@@ -138,7 +172,12 @@ if os.path.isdir(options.fiddler_raw_dir):
         (seq,ack)=make_poop(src,dst,sport,dport,seq,ack,req)
         (seq,ack)=make_poop(dst,src,dport,sport,seq,ack,resp)
         build_finshake(src,dst,sport,dport,seq,ack)
-
+   
+    if options.tmpdir: 
+        try:
+            shutil.rmtree(options.tmpdir)
+        except:
+            print "failed to clean up tmpdir %s you will have to do it" % (options.tmpdir)
 else:
     print "fiddler raw dir specified:%s dos not exist" % (options.fiddler_raw_dir)
     sys.exit(-1)
